@@ -1,0 +1,373 @@
+#!/usr/bin/env python
+
+import numpy as np
+from mce_control import mce_control
+import time
+
+# for checking if we're mux11d (from mce_configure)
+import auto_setup as ast
+mas_path = ast.util.mas_path()
+exp_file = mas_path.experiment_file()
+cfg = ast.config.configFile(exp_file)
+
+USAGE="""
+%prog [options] stage
+
+Configure the MCE for open loop noise measurements.  Basically:
+ - turns off a bunch of biases
+ - disables the servo
+ - disables muxing
+ - for SQ1 measurements, sets a fixed feedback at the current lock point.
+
+The "stage" argument indicates the highest stage you want to leave
+biased.  I.e.:
+
+   preamp - turn off sa biases and sa offsets.
+   sa     - turn off sq2 biases.
+   sq2    - turn off muxing, sq1 biases.
+   sq1    - turn off muxing, tes biases.  Requires a --row argument.
+   tes    - turn off muxing.  Requires a --row argument.
+
+This program is not good at turning things on carefully.  It is mostly
+for turning things off.  So you probably want to run mce_reconfig
+before you run this, or pass "--reconfig" to have the program pre-run
+it for you.
+"""
+
+from optparse import OptionParser
+o = OptionParser(usage=USAGE)
+o.add_option('--row', default=None, type=int,
+             help="specify row to lock (for sq1 and tes stages).")
+o.add_option('--reconfig', action='store_true',
+             help="run mce_reconfig before setting up open loop.")
+o.add_option('--frames', default=30, type=int)
+o.add_option('--no-reinit', action='store_true',
+             help="for tes and sq1 stages, do not re-init the servo before "
+             "measuring the locking feedback.")
+o.add_option('--sq1tune', default=None, type="string",
+             help="(optional) specify tune to pull locking SQ1FB from, instead of doing it on the fly.")
+o.add_option('--sq1lock', default='up', type="choice",
+             choices=('up','dn'),
+             help="(optional) if specified --sq1tune, which lock point to pull from the tune, up or dn.  Default is up.")
+opts, args = o.parse_args()
+
+STAGES = ['preamp', 'sa', 'sq2', 'sq1', 'tes']
+
+# load mux11d/hybrid cfg from experiment.cfg
+# keeping these integers in case wanted for 
+# flags later
+hybrid_dict=dict()
+(ismux11d,ishybrid)=(0,0)
+if 'hardware_mux11d' in cfg.keys():
+    ismux11d=int(cfg['hardware_mux11d'])
+if 'mux11d_hybrid_row_select' in cfg.keys():
+    ishybrid=int(cfg['mux11d_hybrid_row_select'])
+
+    # If we're hybrid MUXing, gonna need some more stuff from the config file
+    if ishybrid==1:
+        if len(set(['mux11d_row_select_cards','mux11d_row_select_cards_row0','mux11d_mux_order']).intersection(cfg.keys()))==3:
+            hybrid_dict['mux11d_row_select_cards']=cfg['mux11d_row_select_cards']
+            hybrid_dict['mux11d_row_select_cards_row0']=cfg['mux11d_row_select_cards_row0']
+            hybrid_dict['mux11d_mux_order']=cfg['mux11d_mux_order']
+        else:
+            o.error("""It looks like you're trying to hybrid MUX, but at least one of ['mux11d_row_select_cards','mux11d_row_select_cards_row0','mux11d_mux_order'] is not defined in experiment.cfg""")
+
+if len(args) != 1 or args[0] not in STAGES:
+    o.error("Provide a single stage argument (%s)." % ','.join(STAGES))
+
+# If on a mux11d system, there is no SQ2
+if ismux11d==True:
+    if args[0]=='sq2':
+        o.error("On a mux11d system - there is no sq2!")
+
+stage = args[0]
+if stage in ['sq1','tes'] and opts.row == None:
+    o.error("The %s stage requires a --row argument." % stage)
+
+# A useful function...
+
+def read_and_zero(mce, card, param):
+    """
+    Read values from card,param.  Set them to zero in the MCE.  Return
+    the read values.
+    """
+    vals = mce.read(card, param)
+    mce.write(card, param, np.zeros(len(vals), 'int'))
+    return vals
+
+
+# Reconfigure?
+if opts.reconfig:
+    import os
+    os.system('mce_reconfig')
+
+# Get MCE
+mce = mce_control()
+
+if stage == 'sq1':
+    read_and_zero(mce, 'tes', 'bias')
+
+if stage in ['sq1', 'tes']:
+
+    # Re-lock
+    if not opts.no_reinit:
+        mce.init_servo()
+        time.sleep(0.1)
+    # Check lock:
+    print 'Columns that appear locked:'
+    mce.data_mode(0)
+    data = mce.read_data(opts.frames, row_col=True).data[opts.row,:,:]
+    err, derr = data.mean(axis=-1), data.std(axis=-1)
+    locked=(abs(err) < derr*2).astype('int')
+    print locked
+
+    # Get SQ1 locking fb
+    fb=None
+    if stage=='sq1' and opts.sq1tune!=None: # pull locking sq1 fb from provided tune
+        import os
+        if os.path.isdir(opts.sq1tune):
+            print 'Pulling locking SQ1 feedbacks from tune=',opts.sq1tune
+            
+            # Load tune
+            fs = ast.util.FileSet(opts.sq1tune)
+            tuning = ast.util.tuningData(exp_file=fs.get('cfg_file'), data_dir='')
+
+            sq = ast.SQ1Ramp.join([ast.SQ1Ramp(f) for f in fs.stage_all('sq1_ramp_check')])
+            sq.tuning = tuning
+
+            # Compute locking feedbacks from tune (and other useful info)
+            sq.reduce()
+            
+            # Get data shape
+            n_row, n_col, n_fb = sq.data_shape[-3:]
+            
+            # Generate a view of the locking feedbacks by row,col
+            lock_up_x=sq.analysis['lock_%s_x'%opts.sq1lock].reshape(n_row, n_col)
+            
+            # Print locking feedbacks for desired row
+            fb=lock_up_x[opts.row].astype('int')
+        else:
+            o.error("Asked to pull locking SQ1 feedback from tune=%s but that tune directory doesn\'t seem to exist ...." % opts.sq1tune)
+    else:
+        # Measure the feedback.
+        mce.data_mode(1)
+        data = mce.read_data(opts.frames, row_col=True).extract('fb')[opts.row,:,:]
+        fb, dfb = data.mean(axis=-1), data.std(axis=-1)
+
+    print 'Locking feedback:'
+    # There may be a good reason the column is in columns_off ; ie we might
+    # never want voltage down these SQ1FB lines.  Send 0V, for the SQ1FB
+    # is -8192 DAC.
+    #fb[np.where(locked==0)]=-8192 # zero for the sq1 fb lines is -8192
+    columns_off=np.array(cfg['columns_off'][:len(fb)])
+    fb[np.where(columns_off==1)]=-8192
+    print fb.astype('int')
+    
+    # Set fb_const (kill the servo below)
+    mce.fb_const(fb.astype('int'))
+    
+    # Only if not MUX11d (otherwise there's no SQ2!)
+    if not ismux11d:
+        # There can be only one.  One row.
+        sq1_bias = np.array(mce.read('ac', 'on_bias'))
+        my_bias = sq1_bias[opts.row]
+        sq1_bias[:] = 0
+        sq1_bias[opts.row] = my_bias
+        
+        mce.write('ac', 'on_bias', sq1_bias)
+        mce.write('ac', 'off_bias', sq1_bias)
+        # Sleep for a bit to let those biases get written, then disable mux.
+        time.sleep(.1)
+        # Reports from users indicate that setting enbl_mux=0 does not
+        # work... so we set it to 1.
+        ##mce.write('ac', 'enbl_mux', [0])
+        mce.write('ac', 'enbl_mux', [0])
+
+        # If fast-switching, set up the SQ2 FB to match the chosen row.
+        # Also disable SQ2 muxing.  Hope you chose a good sq2 fb.
+        sq2_mux = mce.read('sq2', 'enbl_mux')
+        if np.any(sq2_mux):
+            sq2_fb = []
+            for c in range(len(sq2_mux)):
+                sq2_fb.append(mce.read('sq2', 'fb_col%i'%c)[opts.row])
+            # It is necessary to disable muxing before writing the new
+            # (non fast-switching) SQ2 feedback, otherwise it does not get
+            # applied.
+            mce.write('sq2', 'enbl_mux', np.zeros(len(sq2_mux)))
+            time.sleep(.1)
+            mce.write('sq2', 'fb', sq2_fb)
+
+    else:
+        # Must pick the right SQ1 bias and stop MUXing (if MUXing) 
+        # over SQ1 bias, must pick the right SA FB and stop MUXING
+        # (if MUXing) over SA FB and must fix the row of interest
+        # on select, and all other rows on deselect for all row
+        # visits.
+        
+        # Fix the row select/deselects first. 
+        ac_select=np.array(mce.read('ac', 'on_bias'))
+        ac_deselect=np.array(mce.read('ac', 'off_bias'))
+        ac_row_order=np.array(mce.read('ac','row_order'))
+        for (ac_idx,(ac_sel,ac_desel)) in enumerate(zip(ac_select,ac_deselect)):
+            if ac_idx==opts.row:
+                ac_deselect[int(ac_row_order[ac_idx])]=ac_select[int(ac_row_order[ac_idx])]
+            else: 
+                ac_select[int(ac_row_order[ac_idx])]=ac_deselect[int(ac_row_order[ac_idx])]
+                
+        mce.write('ac', 'on_bias', ac_select)
+        mce.write('ac', 'off_bias', ac_deselect)
+        # Sleep for a bit to let those biases get written, then disable mux.
+        time.sleep(.1)
+        # Reports from users indicate that setting enbl_mux=0 does not
+        # work... so we set it to 1.
+        ##mce.write('ac', 'enbl_mux', [0])
+        mce.write('ac', 'enbl_mux', [1])
+
+        # If hybrid MUXing, must disable unrequested BC RSes
+        if ishybrid==1:
+            row_selects=cfg['row_select']
+            row_deselects=cfg['row_deselect']
+            for (r0,card) in zip(hybrid_dict['mux11d_row_select_cards_row0'],hybrid_dict['mux11d_row_select_cards']):
+                if 'bc' in card:
+                    bc_dacs_used_as_hybrid_row_selects=[0]*32 #32 possible RS DACs per BC
+                    bc_fb_const=[0]*32 # constant value to apply to bc DACs being used as hybrid DACs
+                    for rs_idx,rs in enumerate(hybrid_dict['mux11d_mux_order']):
+                        if rs in range(r0,r0+32):
+                            bc_fb_col=np.array(mce.read(card, 'fb_col%d'%(rs-r0)))
+                            if rs_idx==opts.row:
+                                bc_fb_col.fill(row_selects[rs_idx])
+                                bc_fb_const[(rs-r0)]=row_selects[rs_idx]
+                            else:
+                                bc_fb_col.fill(row_deselects[rs_idx])
+                                bc_fb_const[(rs-r0)]=row_deselects[rs_idx]
+                            
+                            # Write this value for every row visit of this BC RS
+                            mce.write(card, 'fb_col%d'%(rs-r0), bc_fb_col)
+
+                            # Remember this DAC is being used as a hybrid RS so we can turn off MUXing on it
+                            bc_dacs_used_as_hybrid_row_selects[(rs-r0)]=1
+            
+                    # Wait a little bit for those values to get picked up before disabling MUXing
+                    time.sleep(.1)
+            
+                    # Disable muxing on hybrid BC RS DACs
+                    bc_mux = np.array(mce.read(card, 'enbl_mux'))
+                    if np.any(bc_mux):
+                        bc_mux[np.where(np.array(bc_dacs_used_as_hybrid_row_selects)==1)]=0
+                        mce.write(card,'enbl_mux', bc_mux)
+
+                    # It is necessary to disable muxing before writing the new
+                    # (non fast-switching) BC RS bias, otherwise it won't
+                    # get applied
+                    time.sleep(.1)
+
+                    # Write constant BC RS fluxes
+                    mce.write(card, 'flux_fb', np.array(bc_fb_const,dtype='int'))
+                
+        # If fast-switching the SQ1 bias, set it to match the chosen row.
+        # Also disable the SQ1 muxing.  Already chose SQ1 fb above.
+        sq1_mux = mce.read('sq1', 'enbl_mux')
+        if np.any(sq1_mux):
+            sq1_bias=[]
+            for c in range(len(sq1_mux)):
+                sq1_bias.append(mce.read('sq1', 'bias_col%i'%c)[opts.row])
+            # It is necessary to disable muxing before writing the new
+            # (non fast-switching) SQ1 bias, otherwise it does not get
+            # applied.
+            mce.write('sq1', 'enbl_mux', np.zeros(len(sq1_mux)))
+            time.sleep(.1)
+            mce.write('sq1', 'bias', sq1_bias)
+
+        # If fast-switching the SA fb, set it to match the chosen row.
+        # Also disable the SA fb muxing.
+        sa_mux = mce.read('sa', 'enbl_mux')
+        if np.any(sa_mux):
+            sa_fb=[]
+            for c in range(len(sa_mux)):
+                sa_fb.append(mce.read('sa', 'fb_col%i'%c)[opts.row])
+            # It is necessary to disable muxing before writing the new
+            # (non fast-switching) SA fb, otherwise it does not get
+            # applied.
+            mce.write('sa', 'enbl_mux', np.zeros(len(sa_mux)))
+            time.sleep(.1)
+            mce.write('sa', 'fb', sa_fb)
+                
+
+if stage in ['sq2', 'sa']:
+    # Kill the SQ1 bias and disable mux.
+    # (N.B. if we're on a mux11d system, 
+    #  these are the AC row select fluxes,
+    #  not the SQ1 biases; but it shouldn't
+    #  hurt to turn them off anyway.
+    read_and_zero(mce, 'ac', 'on_bias')
+    read_and_zero(mce, 'ac', 'off_bias')
+    time.sleep(.1)
+    mce.write('ac', 'enbl_mux', [0])
+
+    # Hybrid MUXing?  If yes, must disable BC-driven RSes
+    if ismux11d==1 and ishybrid==1: 
+        # Hybrid MUX'ing; must also disable BC-driven rows
+        # ...could probably get away with just blanket disabling 
+        #    all bcs w/ hybrid RSes on them, oh well.
+        for (r0,card) in zip(hybrid_dict['mux11d_row_select_cards_row0'],hybrid_dict['mux11d_row_select_cards']):
+            if 'bc' in card:
+                bc_dacs_used_as_hybrid_row_selects=[0]*32 #32 possible RS DACs per BC
+                for rs in hybrid_dict['mux11d_mux_order']:
+                    if rs in range(r0,r0+32):
+                        # Zero this DAC for every row visit
+                        read_and_zero(mce,card,'fb_col%d'%(rs-r0))
+                        # Remember this DAC is being used as a hybrid RS so we can turn off MUXing on it
+                        bc_dacs_used_as_hybrid_row_selects[(rs-r0)]=1
+                
+                # Wait a little bit for those values to get picked up before disabling MUXing
+                time.sleep(.1)
+      
+                # Disable muxing on hybrid BC RS DACs
+                bc_mux = np.array(mce.read(card, 'enbl_mux'))
+                if np.any(bc_mux):
+                    bc_mux[np.where(np.array(bc_dacs_used_as_hybrid_row_selects)==1)]=0
+                    mce.write(card,'enbl_mux', bc_mux)
+                    
+    # Only if not MUX11d (otherwise there's no SQ2!)
+    if not ismux11d:
+        # Also disable SQ2 muxing.  Hope you chose a good sq2 fb.
+        sq2_mux = mce.read('sq2', 'enbl_mux')
+        if np.any(sq2_mux):
+            mce.write('sq2', 'enbl_mux', np.zeros(len(sq2_mux)))
+    else:
+        # Disable SQ1 biases and bias muxing.
+        sq1_mux = mce.read('sq1', 'enbl_mux')
+        if np.any(sq1_mux):
+            mce.write('sq1','enbl_mux', np.zeros(len(sq1_mux)))            
+            time.sleep(.1)
+
+if stage == 'sa':
+    # Only if not MUX11d (otherwise there's no SQ2!)
+    if not ismux11d:
+        # Kill the SQ2 bias
+        read_and_zero(mce, 'sq2', 'bias')
+    else:
+        # Kill the SQ1 bas
+        read_and_zero(mce, 'sq1', 'bias')
+
+        # Disable SA fb muxing
+        sa_mux = mce.read('sa', 'enbl_mux')
+        if np.any(sa_mux):
+            mce.write('sa','enbl_mux', np.zeros(len(sa_mux)))
+        time.sleep(.1)
+        
+        # It is necessary to disable muxing before writing the new
+        # (non fast-switching) SA feedback, otherwise it does not get
+        # applied.
+        sa_fb = mce.read('sa', 'fb')
+        mce.write('sa','fb',sa_fb)
+                        
+if stage == 'preamp':
+    read_and_zero(mce, 'sa', 'bias')
+    read_and_zero(mce, 'sa', 'offset')
+
+# You will probably want error mode data, with the servo off.
+mce.servo_mode(1)
+mce.data_mode(0)
+
+
