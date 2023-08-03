@@ -33,9 +33,11 @@ def kTi_manganin(T):
     k_out = np.interp(T, T_list, k_list)
     return k_out/T
 
-def noise_output(noisetag, configfilename):
+def noise_output(noisetag, configfilename, squidfilename):
     configfile = configparser.ConfigParser()
     configfile.read(configfilename)
+    squidfile = configparser.ConfigParser()
+    squidfile.read(squidfilename)
     kB = 1.38E-23 #SI units
     
     if noisetag == 'sq1_shunt_johnson_rs_closed':
@@ -43,7 +45,7 @@ def noise_output(noisetag, configfilename):
         T_SSA = float(configfile['SSA']['SSA_TEMP_KELVIN'])
         R_SQ1_Shunt = float(configfile['SQ1']['SQ1_SHUNT_OHM'])
         R_SQ1_Para = float(configfile['SQ1']['SQ1_R_par'])
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
         L_SSA_in = float(configfile['SSA']['SSA_L_IN_HENRY'])
         L_NbTi_cable = float(configfile['CRYOCABLE']['NBTI_ROUNDTRIP_INDUCTANCE_HENRY'])
         R_tot = R_SQ1_Shunt + R_SQ1_Para
@@ -55,7 +57,6 @@ def noise_output(noisetag, configfilename):
         f_rolloff = R_tot/(2*np.pi*L_tot)
         
         n_pole = 1
-        print(V_Johnson_SQ1_Shunt)
         
         return(V_Johnson_SQ1_Shunt, f_rolloff, 0, n_pole)
     if noisetag == 'sq1_shunt_johnson_rs_open':
@@ -64,11 +65,12 @@ def noise_output(noisetag, configfilename):
         T_SQ1 = float(configfile['SQ1']['SQ1_TEMP_KELVIN'])
         R_SQ1_Shunt = float(configfile['SQ1']['SQ1_SHUNT_OHM'])
         R_SQ1_Para = float(configfile['SQ1']['SQ1_R_par'])
-        R_SQ1_Series = float(configfile['SQ1']['SQ1_R_series'])
-        R_SQ1_Dyn = float(configfile['SQ1']['SQ1_R_dyn'])
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
+        R_SQ1_Series = float(squidfile['SQ1']['R_SERIES'])
+        R_SQ1_Dyn = float(squidfile['SQ1']['R_DYN_OPERATING_UPSLOPE'])
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
         L_SSA_in = float(configfile['SSA']['SSA_L_IN_HENRY'])
         L_NbTi_cable = float(configfile['CRYOCABLE']['NBTI_ROUNDTRIP_INDUCTANCE_HENRY'])
+        L_SQ1 = float(squidfile['SQ1']['L_SQ1'])
         R_4K = R_SQ1_Shunt + R_SQ1_Para
         R_100mK = R_SQ1_Series + R_SQ1_Dyn
         
@@ -77,7 +79,7 @@ def noise_output(noisetag, configfilename):
         V_Johnson_Amp = I_Johnson_SQ1_Stage * dV_SSA_dI_SSAin
 
         R_tot = R_4K + R_100mK
-        L_tot = L_SSA_in + L_NbTi_cable#Is there a dynamic inductance of the SQUID to change things?
+        L_tot = L_SSA_in + L_NbTi_cable + L_SQ1
         f_rolloff = R_tot/(2*np.pi*L_tot)
         
         n_pole = 1
@@ -89,14 +91,17 @@ def noise_output(noisetag, configfilename):
         R_TES = float(configfile['TES']['TES_R_OP'])
         L_NYQ = float(configfile['TES']['L_NYQUIST'])
 
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
-        dI_SSAin_dI_SQ1in = float(configfile['SQ1']['dI_SSA_IN_dI_SQ1_IN'])
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
+        dI_SSAin_dI_SQ1in = float(squidfile['SQ1']['dI_SSA_IN_dI_SQ1_IN_upslope'])
         
-        I_Johnson_TES_Shunt = np.sqrt(4*kB*T_TES*R_Shunt/(R_Shunt+R_TES))
+        I_Johnson_TES_Shunt = np.sqrt(4*kB*T_TES/(R_Shunt+R_TES))
         V_out = I_Johnson_TES_Shunt * dV_SSA_dI_SSAin * dI_SSAin_dI_SQ1in
 
         f_nyquist = (R_TES + R_Shunt)/(2*np.pi*L_NYQ)
         
+        print('tes shunt johnson')
+        print(V_out)
+        print(f_nyquist)
         n_pole = 1
        
         return(V_out, f_nyquist, 0, n_pole)
@@ -104,10 +109,10 @@ def noise_output(noisetag, configfilename):
     if noisetag == 'ssa_bias_cryocable_johnson':
         T_base = float(configfile['SSA']['SSA_TEMP_KELVIN'])
         T_warm = 300
-        kint = quad(k_manganin, T_base, T_warm)[0]
-        kTint = quad(kT_manganin, T_base, T_warm)[0]
+        kint = quad(k_manganin, T_base, T_warm, full_output=1)[0]
+        kTint = quad(kT_manganin, T_base, T_warm, full_output=1)[0]
         
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         v_out = np.sqrt(4*kB*R_cable*kTint/(kint))
         
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
@@ -120,11 +125,11 @@ def noise_output(noisetag, configfilename):
     if noisetag == 'sq1_bias_cryocable_johnson_rs_closed':
         T_base = float(configfile['SSA']['SSA_TEMP_KELVIN'])
         T_warm = 300
-        kint = quad(k_manganin, T_base, T_warm)[0]
-        kTint = quad(kT_manganin, T_base, T_warm)[0]
+        kint = quad(k_manganin, T_base, T_warm, full_output=1)[0]
+        kTint = quad(kT_manganin, T_base, T_warm, full_output=1)[0]
         
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
         R_SQ1_BIAS_LIST = np.array(json.loads(configfile.get("SQ1","SQ1B_BACKPLANE_RESISTANCE_OHMS")))
         if isinstance(R_SQ1_BIAS_LIST, np.ndarray):
             R_backplane = np.sum(R_SQ1_BIAS_LIST)
@@ -157,10 +162,10 @@ def noise_output(noisetag, configfilename):
     if noisetag == 'sq1_bias_cryocable_johnson_rs_open':
         T_base = float(configfile['SSA']['SSA_TEMP_KELVIN'])
         T_warm = 300
-        kint = quad(k_manganin, T_base, T_warm)[0]
-        kTint = quad(kT_manganin, T_base, T_warm)[0]
+        kint = quad(k_manganin, T_base, T_warm, full_output=1)[0]
+        kTint = quad(kT_manganin, T_base, T_warm, full_output=1)[0]
         
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
         R_SQ1_BIAS_LIST = np.array(json.loads(configfile.get("SQ1","SQ1B_BACKPLANE_RESISTANCE_OHMS")))
         if isinstance(R_SQ1_BIAS_LIST, np.ndarray):
@@ -171,9 +176,9 @@ def noise_output(noisetag, configfilename):
         R_tot = R_cable + R_backplane + R_board
         
         R_SQ1_Shunt = float(configfile['SQ1']['SQ1_SHUNT_OHM'])
-        R_SQ1_Dyn = float(configfile['SQ1']['SQ1_R_dyn'])
+        R_SQ1_Dyn = float(squidfile['SQ1']['R_DYN_OPERATING_UPSLOPE'])
         R_SQ1_Para = float(configfile['SQ1']['SQ1_R_par'])
-        R_SQ1_Series = float(configfile['SQ1']['SQ1_R_series'])
+        R_SQ1_Series = float(squidfile['SQ1']['R_SERIES'])
         
         R_IN_LEG = R_SQ1_Dyn + R_SQ1_Para + R_SQ1_Series
                 
@@ -185,7 +190,8 @@ def noise_output(noisetag, configfilename):
 
         L_SSA_in = float(configfile['SSA']['SSA_L_IN_HENRY'])
         L_NbTi_cable = float(configfile['CRYOCABLE']['NBTI_ROUNDTRIP_INDUCTANCE_HENRY'])
-        L_cold = L_SSA_in + L_NbTi_cable
+        L_SQ1 = float(squidfile['SQ1']['L_SQ1'])
+        L_cold = L_SSA_in + L_NbTi_cable + L_SQ1
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])  
         f_rolloff = R_cable/(2*np.pi*L_cold)
         f_cable = 1/(2*np.pi*R_cable*C_cable)
@@ -198,14 +204,18 @@ def noise_output(noisetag, configfilename):
     if noisetag == 'ssa_fb_cryocable_johnson':
         T_base = float(configfile['SSA']['SSA_TEMP_KELVIN'])
         T_warm = 300
-        kint = quad(k_manganin, T_base, T_warm)[0]
-        kint = quad(k_manganin, T_base, T_warm)[0]
-        kTint = quad(kT_manganin, T_base, T_warm)[0]
+        kint = quad(k_manganin, T_base, T_warm, full_output=1)[0]
+        kint = quad(k_manganin, T_base, T_warm, full_output=1)[0]
+        kTint = quad(kT_manganin, T_base, T_warm, full_output=1)[0]
         
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         ADU_conversion = float(configfile['PREAMPADC']['ADU_TO_VOLTS_AT_PREAMP_INPUT'])
         SSAFB_conversion = float(configfile['SSA']['SSAFB_AMP_DAC'])
         dV_SSA_dFB_SSA = float(configfile['SSA']['dV_SSA_ADU_dFB_SSA_ADC'])
+        
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
+        turns_ratio = float(squidfile['SSA']['M_SSA_IN'])/float(squidfile['SSA']['M_SSA_FB'])
+        
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         R_backplane = float(configfile['SSA']['SSA_FB_BACKPLANE_RESISTANCE_OHMS'])
         R_board = np.array(json.loads(configfile.get("SSA","SSA_FB_BC_RESISTANCE_OHM")))
         R_tot = R_cable + R_backplane + np.sum(R_board)
@@ -213,7 +223,7 @@ def noise_output(noisetag, configfilename):
         V_Johnson_SSA_FB_Cable = np.sqrt(4*kB*R_cable*kTint/(kint))
         V_Johnson_SSA_FB_R = np.sqrt(4*kB*T_warm*(R_backplane + np.sum(R_board)))
         I_Johnson_SSA_FB_Cable = (V_Johnson_SSA_FB_Cable + V_Johnson_SSA_FB_R)/R_tot
-        V_Johnson_Out = I_Johnson_SSA_FB_Cable * dV_SSA_dFB_SSA * ADU_conversion/SSAFB_conversion
+        V_Johnson_Out = I_Johnson_SSA_FB_Cable * dV_SSA_dI_SSAin/turns_ratio
 
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])        
         if configfile['PREAMPADC']['CIRCUIT_TYPE']=='S4':
@@ -232,12 +242,12 @@ def noise_output(noisetag, configfilename):
     if noisetag == 'sq1_fb_cryocable_johnson':
         T_base = float(configfile['SSA']['SSA_TEMP_KELVIN'])
         T_warm = 300
-        kint = quad(k_manganin, T_base, T_warm)[0]
-        kint = quad(k_manganin, T_base, T_warm)[0]
-        kTint = quad(kT_manganin, T_base, T_warm)[0]
+        kint = quad(k_manganin, T_base, T_warm, full_output=1)[0]
+        kint = quad(k_manganin, T_base, T_warm, full_output=1)[0]
+        kTint = quad(kT_manganin, T_base, T_warm, full_output=1)[0]
         
         R_SQ1_FB_BACKPLANE = float(configfile['SQ1']['SQ1_FB_BACKPLANE_RESISTANCE_OHMS'])
-        R_Cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_Cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         C_Cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
         
         R_Filt = np.array(json.loads(configfile.get("SQ1","SQ1_FB_LPF_OHM")))
@@ -247,9 +257,9 @@ def noise_output(noisetag, configfilename):
         else:
             R_Tot = R_SQ1_FB_BACKPLANE + R_Filt + R_Cable
 
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
-        dI_SSAin_dI_SQ1in = float(configfile['SQ1']['dI_SSA_IN_dI_SQ1_IN'])
-        turns_ratio = float(configfile['SQ1']['SQ1_M_IN_PICOHENRY'])/float(configfile['SQ1']['SQ1_M_FB_PICOHENRY'])
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
+        dI_SSAin_dI_SQ1in = float(squidfile['SQ1']['dI_SSA_IN_dI_SQ1_IN_upslope'])
+        turns_ratio = float(squidfile['SQ1']['M_SQ1_IN'])/float(squidfile['SQ1']['M_SQ1_FB'])
         
         V_Johnson_SQ1_FB_Cable = np.sqrt(4*kB*R_Cable*kTint/(kint))
         V_Johnson_SQ1_FB_R = np.sqrt(4*kB*T_warm*(R_SQ1_FB_BACKPLANE + np.sum(R_Filt)))
@@ -267,13 +277,13 @@ def noise_output(noisetag, configfilename):
     if noisetag == 'tes_bias_cryocable_johnson':
         T_base = float(configfile['SSA']['SSA_TEMP_KELVIN'])
         T_warm = 300
-        kint = quad(k_manganin, T_base, T_warm)[0]
-        kTint = quad(kT_manganin, T_base, T_warm)[0]
+        kint = quad(k_manganin, T_base, T_warm, full_output=1)[0]
+        kTint = quad(kT_manganin, T_base, T_warm, full_output=1)[0]
         
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
-        dI_SSAin_dI_SQ1in = float(configfile['SQ1']['dI_SSA_IN_dI_SQ1_IN'])
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
+        dI_SSAin_dI_SQ1in = float(squidfile['SQ1']['dI_SSA_IN_dI_SQ1_IN_upslope'])
         
         TES_BC_RESISTANCE_OHM = np.array(json.loads(configfile.get("TES","TES_BIAS_BC_RESISTANCE_OHM")))
         if configfile['PREAMPADC']['CIRCUIT_TYPE']=='S4':
@@ -304,10 +314,13 @@ def noise_output(noisetag, configfilename):
         f_cable = 1/(2*np.pi*R_cable*C_cable)
         f_rolloff = np.append(f_rolloff, f_cable)   
         f_nyquist = R_cable/(2*np.pi*L_NYQ)
-        f_rolloff = np.append(f_rolloff, f_nyquist)        
+        f_rolloff = np.append(f_rolloff, f_nyquist)
+        print(noisetag)
+        print('Rolloff freq:')
+        print(f_rolloff)
         
         n_pole = 1
-        
+                
         return(V_Johnson_Out, f_rolloff, 0, n_pole)  
     
     if noisetag == 'ssa_offset_bias_johnson':
@@ -333,7 +346,7 @@ def noise_output(noisetag, configfilename):
         i_noise = float(configfile['PREAMPADC']['SA_AMPLIFIER_NOISE_AMPS'])
         
         R_bias = float(configfile['SSA']['SSA_BIAS_RC_RESISTANCE_OHMS'])
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         R_SSA = float(configfile['SSA']['SSA_R_DYN'])
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
         R_total = R_cable + R_SSA
@@ -343,13 +356,8 @@ def noise_output(noisetag, configfilename):
         R_Offset_Parallel = R_Offset*R_Offset_Bias/(R_Offset + R_Offset_Bias)
         
         v_current_plus = i_noise * R_total
-        print('SA Amp Ref')
-        print(v_current_plus)
         v_current_minus = i_noise * R_Offset_Parallel * R_Gain / (R_Offset_Parallel + R_Gain)
-        print(v_current_minus)
-        print(v_noise)
         v_tot = np.sqrt(v_noise**2 + v_current_plus**2 + v_current_minus**2)
-        print(v_tot)
         f_rolloff = float(configfile['PREAMPADC']['AMPLIFIER_ROLLOFF'])#solely limited by room temp bandwidth
         
         corner_freq = float(configfile['PREAMPADC']['SA_AMPLIFIER_CORNER'])
@@ -359,7 +367,7 @@ def noise_output(noisetag, configfilename):
         return(v_tot, f_rolloff, corner_freq, n_pole)
     if noisetag == 'ssa_bias_dac':
         R_bias = float(configfile['SSA']['SSA_BIAS_RC_RESISTANCE_OHMS'])
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         R_SSA = float(configfile['SSA']['SSA_R_DYN'])
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
         R_total = R_cable + R_bias + R_SSA
@@ -390,18 +398,17 @@ def noise_output(noisetag, configfilename):
     if noisetag == 'ssa_fb_amp_in':
         SSA_FB_BACKPLANE_RESISTANCE_OHMS = float(configfile['SSA']['SSA_FB_BACKPLANE_RESISTANCE_OHMS'])
         SSA_FB_BC_RESISTANCE_OHM = np.array(json.loads(configfile.get("SSA","SSA_FB_BC_RESISTANCE_OHM")))
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
         
         R_total = SSA_FB_BACKPLANE_RESISTANCE_OHMS + np.sum(SSA_FB_BC_RESISTANCE_OHM) + R_cable
         
         I_SSA_FB = float(configfile['PREAMPADC']['SSA_FB_AMPLIFIER_NOISE'])/R_total
         
-        ADU_conversion = float(configfile['PREAMPADC']['ADU_TO_VOLTS_AT_PREAMP_INPUT'])
-        SSAFB_conversion = float(configfile['SSA']['SSAFB_AMP_DAC'])
-        dV_SSA_dFB_SSA = float(configfile['SSA']['dV_SSA_ADU_dFB_SSA_ADC'])
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
+        turns_ratio = float(squidfile['SSA']['M_SSA_IN'])/float(squidfile['SSA']['M_SSA_FB'])
         
-        v_out = I_SSA_FB * dV_SSA_dFB_SSA * ADU_conversion/SSAFB_conversion
+        v_out = I_SSA_FB * dV_SSA_dI_SSAin/turns_ratio
 
         
         if configfile['PREAMPADC']['CIRCUIT_TYPE']=='S4':
@@ -424,11 +431,11 @@ def noise_output(noisetag, configfilename):
         else:
             R_SQ1_BACKPLANE_BIAS = R_SQ1_BIAS_LIST
         R_SQ1_RC_BIAS = float(configfile['SQ1']['SQ1B_BC_RESISTANCE_OHM'])
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
         
         R_bias = R_SQ1_BACKPLANE_BIAS + R_SQ1_RC_BIAS + R_cable
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
 
         R_SQ1_Shunt = float(configfile['SQ1']['SQ1_SHUNT_OHM'])
         R_SQ1_Para = float(configfile['SQ1']['SQ1_R_par'])
@@ -463,17 +470,17 @@ def noise_output(noisetag, configfilename):
             R_SQ1_BACKPLANE_BIAS = R_SQ1_BIAS_LIST
             
         R_SQ1_RC_BIAS = float(configfile['SQ1']['SQ1B_BC_RESISTANCE_OHM'])        
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
 
         R_bias = R_SQ1_BACKPLANE_BIAS + R_SQ1_RC_BIAS + R_cable
             #Dynamic resistance, shunt resistance, parasitic resistance are all 3 orders of magnitude smaller than the backplane resistors, so not going to trouble with the voltage divider.
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
         
         R_SQ1_Shunt = float(configfile['SQ1']['SQ1_SHUNT_OHM'])
-        R_SQ1_Dyn = float(configfile['SQ1']['SQ1_R_dyn'])
+        R_SQ1_Dyn = float(squidfile['SQ1']['R_DYN_OPERATING_UPSLOPE'])
         R_SQ1_Para = float(configfile['SQ1']['SQ1_R_par'])
-        R_SQ1_Series = float(configfile['SQ1']['SQ1_R_series'])
+        R_SQ1_Series = float(squidfile['SQ1']['R_SERIES'])
         
         R_IN_LEG = R_SQ1_Dyn + R_SQ1_Para + R_SQ1_Series
         I_SSA_IN = float(configfile['PREAMPADC']['SQ1_BIAS_AMPLIFIER_NOISE'])/(R_bias * (1 + (R_IN_LEG/R_SQ1_Shunt)))
@@ -486,10 +493,11 @@ def noise_output(noisetag, configfilename):
             f_cable = 1/(2*np.pi*R_cable*C_cable)
             f_rolloff = np.append(f_rolloff, f_cable)
         else:
-            f_rolloff = 1/(2*np.pi*R_cable*C_cable)
+            f_rolloff = 1/(2*np.pi*R_cable*C_cable) 
         L_SSA_in = float(configfile['SSA']['SSA_L_IN_HENRY'])
         L_NbTi_cable = float(configfile['CRYOCABLE']['NBTI_ROUNDTRIP_INDUCTANCE_HENRY'])
-        L_cold = L_SSA_in + L_NbTi_cable
+        L_SQ1 = float(squidfile['SQ1']['L_SQ1'])
+        L_cold = L_SSA_in + L_NbTi_cable + L_SQ1
         f_inductor = R_cable/(2*np.pi*L_cold)
         f_rolloff = np.append(f_rolloff, f_inductor)
             
@@ -500,12 +508,12 @@ def noise_output(noisetag, configfilename):
         return(v_out, f_rolloff, corner_freq, n_pole)        
     
     if noisetag == 'sq1_fb_amp_in':
-        turns_ratio = float(configfile['SQ1']['SQ1_M_IN_PICOHENRY'])/float(configfile['SQ1']['SQ1_M_FB_PICOHENRY'])
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
-        dI_SSAin_dI_SQ1in = float(configfile['SQ1']['dI_SSA_IN_dI_SQ1_IN'])
+        turns_ratio = float(squidfile['SQ1']['M_SQ1_IN'])/float(squidfile['SQ1']['M_SQ1_FB'])
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
+        dI_SSAin_dI_SQ1in = float(squidfile['SQ1']['dI_SSA_IN_dI_SQ1_IN_upslope'])
 
         R_SQ1_FB_BACKPLANE = float(configfile['SQ1']['SQ1_FB_BACKPLANE_RESISTANCE_OHMS'])
-        R_Cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_Cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         C_Cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
         
         R_Filt = np.array(json.loads(configfile.get("SQ1","SQ1_FB_LPF_OHM")))
@@ -535,15 +543,15 @@ def noise_output(noisetag, configfilename):
         return(v_out, f_rolloff, corner_freq, n_pole)  
     if noisetag == 'tes_bias_amp_in':
         TES_BC_RESISTANCE_OHM = np.array(json.loads(configfile.get("TES","TES_BIAS_BC_RESISTANCE_OHM")))
-        R_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
+        R_cable = float(squidfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_RESISTANCE_OHMS'])
         C_cable = float(configfile['CRYOCABLE']['CRYOCABLE_ROUNDTRIP_CAPACITANCE_FARAD'])
         
         R_TES = float(configfile['TES']['TES_R_OP'])
         R_SHUNT = float(configfile['TES']['TES_R_SHUNT'])
         L_NYQ = float(configfile['TES']['L_NYQUIST'])
         
-        dV_SSA_dI_SSAin = 1/float(configfile['SSA']['dI_SSA_IN_dV_SSA']) *1e3 #V per A
-        dI_SSAin_dI_SQ1in = float(configfile['SQ1']['dI_SSA_IN_dI_SQ1_IN'])
+        dV_SSA_dI_SSAin = float(squidfile['SSA']['dV_SSA_dI_SSA_IN_UPSLOPE'])
+        dI_SSAin_dI_SQ1in = float(squidfile['SQ1']['dI_SSA_IN_dI_SQ1_IN_upslope'])
         
         if configfile['PREAMPADC']['CIRCUIT_TYPE']=='S4':
             I_TES_BIAS = 0.5*float(configfile['PREAMPADC']['TES_BIAS_AMPLIFIER_NOISE'])/TES_BC_RESISTANCE_OHM
@@ -554,7 +562,7 @@ def noise_output(noisetag, configfilename):
         I_TES = I_TES_BIAS/(1 + (R_TES/R_SHUNT))
                 
         v_out = I_TES * dV_SSA_dI_SSAin * dI_SSAin_dI_SQ1in
-
+        
         if configfile['PREAMPADC']['CIRCUIT_TYPE']=='S4':
             R_Filt = np.array(json.loads(configfile.get("TES","TES_BIAS_LPF_OHM")))
             C_Filt = np.array(json.loads(configfile.get("TES","TES_BIAS_LPF_FARAD")))        
@@ -567,7 +575,7 @@ def noise_output(noisetag, configfilename):
         f_cable = 1/(2*np.pi*R_cable*C_cable)
         f_rolloff = np.append(f_rolloff, f_cable)        
         f_nyquist = (R_TES + R_SHUNT)/(2*np.pi*L_NYQ)
-        f_rolloff = np.append(f_rolloff, f_nyquist)        
+        f_rolloff = np.append(f_rolloff, f_nyquist)
         
         corner_freq = float(configfile['PREAMPADC']['TES_BIAS_AMPLIFIER_NOISE_CORNER'])
 
@@ -577,13 +585,13 @@ def noise_output(noisetag, configfilename):
     else:
         print('%s is not a valid tag' %noisetag)
             
-def full_system_noise(noise_list, sample_tag, configfilename, figure_title, plot_tag):
+def full_system_noise(noise_list, sample_tag, configfilename, squidfilename, figure_title, plot_tag):
     configfile = configparser.ConfigParser()
     configfile.read(configfilename)
     
     if sample_tag == 'full bandwidth':
         adc_freq = float(configfile['PREAMPADC']['ADC_FREQ'])
-        f_grid = np.linspace(0, adc_freq/2, 32768)
+        f_grid = np.logspace(1, np.log10(adc_freq/2), 32768)
     elif sample_tag == 'multiplexing':
         num_array_visits = int(1e4)
         num_downsamples = int(configfile['PREAMPADC']['NUM_SAMPLES'])
@@ -598,7 +606,7 @@ def full_system_noise(noise_list, sample_tag, configfilename, figure_title, plot
     f_amp_poles = float(configfile['PREAMPADC']['AMPLIFIER_POLES'])
     
     for noise_source in noise_list:
-        noise_level, noise_rolloff, corner_freq, n_pole = noise_output(noise_source, configfilename)
+        noise_level, noise_rolloff, corner_freq, n_pole = noise_output(noise_source, configfilename, squidfilename)
         if sample_tag == 'full bandwidth':
             v_grid = noise_level * np.ones(np.shape(f_grid))
             if isinstance(noise_rolloff, np.ndarray):

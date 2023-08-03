@@ -5,7 +5,7 @@ import time
 
 import sys
 sys.path.append('Scripts/')
-from colorednoise import powerlaw_psd_gaussian
+from powerlawnoise import powerlaw_psd_gaussian
 
 #of = open("estimate_alias.dat", 'w')
 #of.write(f"# {'f3dB':20}\t{'num_downsamples':20}\t{'adc_freq':20}\t{'row_len':20}\t{'num_rows':20}\t\t{'num_array_visits':20}\t{'AFdB':20}\n")
@@ -39,14 +39,15 @@ def aliased_noise(num_array_visits, num_downsamples, adc_freq, row_len, num_rows
     adc_samples_filt, _ = signal.lfilter(
         b, a, adc_samples_filt, zi=zi*adc_samples_filt[0])
     
+    f_filt, pxx_filt_den = signal.welch(adc_samples_filt, adc_freq,
+                                   nperseg=num_samples//samplequotient)
+
     if do_plot:
         # Calculate noise spectra for plotting purposes
         # Scale by Nyquist freq so that power spectral density before
         # downsampling is ~1
         f_raw, pxx_raw_den = signal.welch(adc_samples, adc_freq,
                                       nperseg=num_samples//samplequotient)
-        f_filt, pxx_filt_den = signal.welch(adc_samples_filt, adc_freq,
-                                        nperseg=num_samples//samplequotient)
         f_pink, pxx_pink_den = signal.welch(adc_pink_noise, adc_freq,
                                       nperseg=num_samples//samplequotient)
         
@@ -100,6 +101,8 @@ def aliased_noise(num_array_visits, num_downsamples, adc_freq, row_len, num_rows
     
     #of.write(
     #    f"{analog_f3db_hz:.4e}\t{num_downsamples:20}\t{adc_freq:.3e}\t{row_len:20}\t{num_rows:20}\t{num_array_visits:.3e}\t{AFdB:.2f}\n")
+    f_multiplexed = np.logspace(-1, np.log10(f_downsample[-1]))    
+    total_noise_spectrum = np.sqrt(np.square(v_pink_noise/np.sqrt(f_multiplexed)) + np.square(v_noise_aliased))
 
     if do_plot:
         #plt.title(
@@ -107,7 +110,7 @@ def aliased_noise(num_array_visits, num_downsamples, adc_freq, row_len, num_rows
 
         plt.loglog(f_downsample, np.sqrt(pxx_downsample_den), label = 'Multiplexing Aliased Noise')
         f_multiplexed = np.logspace(-1, np.log10(f_downsample[-1]))
-        plt.loglog(f_multiplexed, np.sqrt(np.square(v_pink_noise/np.sqrt(f_multiplexed)) + np.square(v_noise_aliased)), label='2 component multiplexed noise result')
+        plt.loglog(f_multiplexed, total_noise_spectrum, label='2 component multiplexed noise result')
         plt.legend(loc='best')
         if save_plot:
             plt.savefig('figures/aliased_noise_example.png')#, bbox_inches='tight
@@ -115,5 +118,5 @@ def aliased_noise(num_array_visits, num_downsamples, adc_freq, row_len, num_rows
     #of.close()
     end = time.time()
     #print(end-start)
-    return(v_noise_aliased, v_noise_1f, f_downsample, np.sqrt(pxx_downsample_den))
+    return(v_noise_aliased, v_noise_1f, f_filt, np.sqrt(pxx_filt_den), f_multiplexed, total_noise_spectrum)
     plt.show()
